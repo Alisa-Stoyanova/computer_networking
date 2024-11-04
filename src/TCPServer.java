@@ -10,13 +10,15 @@
  *
  */
 
-import java.io.BufferedReader;
-import java.io.DataOutputStream;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URLConnection;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.concurrent.Semaphore;
 
 // TCP-Server, der Verbindungsanfragen entgegennimmt
@@ -37,6 +39,12 @@ public class TCPServer {
         this.workerThreadsSem = new Semaphore(maxThreads);
     }
 
+    public static void main(String[] args) {
+        /* Erzeuge Server und starte ihn */
+        TCPServer myServer = new TCPServer(60000, 2);
+        myServer.startServer();
+    }
+
     public void startServer() {
         ServerSocket welcomeSocket; // TCP-Server-Socketklasse
         Socket connectionSocket; // TCP-Standard-Socketklasse
@@ -47,6 +55,13 @@ public class TCPServer {
             /* Server-Socket erzeugen */
             System.err.println("Creating new TCP Server Socket Port " + serverPort);
             welcomeSocket = new ServerSocket(serverPort);
+
+/*            Path htuserPath = Paths.get("Testweb/.htuser");
+            if(Files.exists(htuserPath)) {
+                File htuser = new File(htuserPath.toUri());
+                InputStream htuserStream = new BufferedReader(new FileInputStream(htuser));
+                System.out.println(htuserStream.readLine);
+            }*/
 
             while (serviceRequested) {
                 workerThreadsSem.acquire();  // Blockieren, wenn max. Anzahl Worker-Threads erreicht
@@ -62,14 +77,8 @@ public class TCPServer {
                 (new TCPWorkerThread(nextThreadNumber++, connectionSocket, this)).start();
             }
         } catch (Exception e) {
-            System.err.println(e.toString());
+            System.err.println(e);
         }
-    }
-
-    public static void main(String[] args) {
-        /* Erzeuge Server und starte ihn */
-        TCPServer myServer = new TCPServer(60000, 2);
-        myServer.startServer();
     }
 }
 
@@ -90,7 +99,7 @@ class TCPWorkerThread extends Thread {
     private DataOutputStream outToClient;
     private String requestLine;
     private String getMethod = "GET";
-    String[] statusCodes = {"400 Bad Request", "401 Unauthorized", "404 Not Found", "406 Not Acceptable"};
+    String[] statusCodes = {"400 Bad Request", "401 Unauthorized", "404 Not Found", "406 Not Acceptable", "505 HTTP Version Not Supported", "200 OK"};
 
     public TCPWorkerThread(int num, Socket sock, TCPServer server) {
         /* Konstruktor */
@@ -108,8 +117,21 @@ class TCPWorkerThread extends Thread {
             inFromClient = new BufferedReader(new InputStreamReader(socket.getInputStream(), CHARSET));
             outToClient = new DataOutputStream(socket.getOutputStream());
             requestLine = inFromClient.readLine();
-            if (!requestLine.substring(0, 3).equals(getMethod)) {
+            String[] requestLineParsed = requestLine.split(" "); // {method, URL, HTTP-Version}
+            if (requestLineParsed.length != 3) {
+                respond(3);
+                return;
+            }
+            if (!requestLineParsed[0].equals(getMethod)) {
                 respond(0);
+                return;
+            } // else -> it is a GET-request
+
+            System.out.println(Arrays.toString(requestLineParsed));
+
+            if (!requestLineParsed[2].equals("HTTP/1.0") && !requestLineParsed[2].equals("HTTP/1.1")) {
+                respond(4); // other HTTP-Version
+                return;
             }
 
             //collect all headers
@@ -122,20 +144,61 @@ class TCPWorkerThread extends Thread {
                     break;
                 }
             }
-            // System.err.println(headerLines);
+
+            System.err.println("Header-fields from the client:");
+            for (String headerLine : headerLines) {
+                System.err.println(headerLine);
+            }
+
             for (String headerLine : headerLines) {
                 String[] splitLine = headerLine.split(": ");
-                if(!(splitLine[0].equalsIgnoreCase("User-Agent") && splitLine[1].equals("Firefox"))) { // HTTP header names are case-insensitive
+
+                System.out.println(Arrays.toString(splitLine));
+
+                if (!(splitLine[0].equalsIgnoreCase("User-Agent") && splitLine[1].contains("Firefox"))) { // HTTP header names are case-insensitive
                     respond(3);
+                    return;
                 }
             }
 
-            /* Socket-Streams schliessen --> Verbindungsabbau */
-            socket.close();
+/*            String userDirectory = System.getProperty("user.dir");
+            System.err.println("Current directory: " + userDirectory);*/
+
+            String url = requestLineParsed[1].substring(1); // remove "/"
+
+            Path filePath = Paths.get(url);
+            if (!Files.exists(filePath)) {
+                respond(2);
+                return;
+            }
+
+            outToClient.writeChars("HTTP/1.0 " + statusCodes[5] + CRLF); // send status line
+
+            // send entity-body
+            File requestedResource = new File(url);
+
+            String mimeType = URLConnection.guessContentTypeFromName(requestedResource.getName());
+
+            outToClient.writeChars("Content-Length: " + requestedResource.length() + CRLF);
+            outToClient.writeChars("Content-Length: " + mimeType + CRLF + CRLF);
+
+            InputStream fromFile = new FileInputStream(requestedResource);
+            byte[] buffer = new byte[4096];
+            int len;
+            while ((len = fromFile.read(buffer)) > 0) { // copy the requested file
+                outToClient.write(buffer, 0, len);
+            }
+
+            // socket.close();
         } catch (
                 IOException e) {
+            System.err.println(e);
             System.err.println("Connection aborted by client!");
         } finally {
+            try {
+                socket.close(); // Socket-Streams schliessen --> Verbindungsabbau
+            } catch (IOException ignored) {
+            }
             //System.err.println("TCP Worker Thread " + name + " stopped!");
             /* Platz fuer neuen Thread freigeben */
             server.workerThreadsSem.release();
@@ -146,3 +209,6 @@ class TCPWorkerThread extends Thread {
         outToClient.writeChars("HTTP/1.0 " + statusCodes[statusCodeIdx] + CRLF + CRLF); // end requestLine + end header
     }
 }
+
+/*GET /Testweb/index.html HTTP/1.0
+User-Agent: Firefox*/
