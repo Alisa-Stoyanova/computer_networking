@@ -97,9 +97,12 @@ class TCPWorkerThread extends Thread {
     private TCPServer server;
     private BufferedReader inFromClient;
     private DataOutputStream outToClient;
-    private String requestLine;
-    private String getMethod = "GET";
-    String[] statusCodes = {"400 Bad Request", "401 Unauthorized", "404 Not Found", "406 Not Acceptable", "505 HTTP Version Not Supported", "200 OK"};
+    private static String[] statusCodes = {"400 Bad Request",
+                            "401 Unauthorized",
+                            "404 Not Found",
+                            "406 Not Acceptable",
+                            "505 HTTP Version Not Supported",
+                            "200 OK"};
 
     public TCPWorkerThread(int num, Socket sock, TCPServer server) {
         /* Konstruktor */
@@ -116,18 +119,18 @@ class TCPWorkerThread extends Thread {
             /* Socket-Basisstreams durch spezielle Streams filtern */
             inFromClient = new BufferedReader(new InputStreamReader(socket.getInputStream(), CHARSET));
             outToClient = new DataOutputStream(socket.getOutputStream());
-            requestLine = inFromClient.readLine();
+            String requestLine = inFromClient.readLine();
             String[] requestLineParsed = requestLine.split(" "); // {method, URL, HTTP-Version}
             if (requestLineParsed.length != 3) {
                 respond(3);
                 return;
             }
-            if (!requestLineParsed[0].equals(getMethod)) {
+            if (!requestLineParsed[0].equals("GET")) {
                 respond(0);
                 return;
             } // else -> it is a GET-request
 
-            System.out.println(Arrays.toString(requestLineParsed));
+            // System.out.println(Arrays.toString(requestLineParsed));
 
             if (!requestLineParsed[2].equals("HTTP/1.0") && !requestLineParsed[2].equals("HTTP/1.1")) {
                 respond(4); // other HTTP-Version
@@ -140,28 +143,30 @@ class TCPWorkerThread extends Thread {
                 String line = inFromClient.readLine();
                 if (line.length() != 0) {
                     headerLines.add(line);
-                } else {
+                } else { // CRLFlength == 0
                     break;
                 }
             }
 
-            System.err.println("Header-fields from the client:");
+            System.out.println("Header-fields from the client:");
             for (String headerLine : headerLines) {
-                System.err.println(headerLine);
+                System.out.println(headerLine);
             }
 
             for (String headerLine : headerLines) {
                 String[] splitLine = headerLine.split(": ");
 
-                System.out.println(Arrays.toString(splitLine));
+                // System.out.println(Arrays.toString(splitLine));
 
-                if (!(splitLine[0].equalsIgnoreCase("User-Agent") && splitLine[1].contains("Firefox"))) { // HTTP header names are case-insensitive
-                    respond(3);
-                    return;
+                if (splitLine[0].equalsIgnoreCase("User-Agent")) { // HTTP header names are case-insensitive
+                    if (!splitLine[1].contains("Firefox")) {
+                        respond(3);
+                        return;
+                    }
                 }
             }
 
-/*            String userDirectory = System.getProperty("user.dir");
+            /* String userDirectory = System.getProperty("user.dir");
             System.err.println("Current directory: " + userDirectory);*/
 
             String url = requestLineParsed[1].substring(1); // remove "/"
@@ -172,15 +177,19 @@ class TCPWorkerThread extends Thread {
                 return;
             }
 
-            outToClient.writeChars("HTTP/1.0 " + statusCodes[5] + CRLF); // send status line
+            outToClient.writeBytes("HTTP/1.0 " + statusCodes[5] + CRLF); // send status line
 
             // send entity-body
             File requestedResource = new File(url);
 
             String mimeType = URLConnection.guessContentTypeFromName(requestedResource.getName());
 
-            outToClient.writeChars("Content-Length: " + requestedResource.length() + CRLF);
-            outToClient.writeChars("Content-Length: " + mimeType + CRLF + CRLF);
+            outToClient.writeBytes("Content-Length: " + requestedResource.length() + CRLF);
+            outToClient.writeBytes("Content-Type: " + mimeType + CRLF + CRLF);
+
+            System.out.println("Response headers:");
+            System.out.println("Content-Length: " + requestedResource.length());
+            System.out.println("Content-Type: " + mimeType);
 
             InputStream fromFile = new FileInputStream(requestedResource);
             byte[] buffer = new byte[4096];
@@ -189,16 +198,14 @@ class TCPWorkerThread extends Thread {
                 outToClient.write(buffer, 0, len);
             }
 
-            // socket.close();
-        } catch (
-                IOException e) {
+            // socket.close(); // later, because of returns
+        } catch (IOException e) {
             System.err.println(e);
             System.err.println("Connection aborted by client!");
         } finally {
             try {
                 socket.close(); // Socket-Streams schliessen --> Verbindungsabbau
-            } catch (IOException ignored) {
-            }
+            } catch (IOException ignored) { }
             //System.err.println("TCP Worker Thread " + name + " stopped!");
             /* Platz fuer neuen Thread freigeben */
             server.workerThreadsSem.release();
@@ -206,7 +213,8 @@ class TCPWorkerThread extends Thread {
     }
 
     private void respond(int statusCodeIdx) throws IOException {
-        outToClient.writeChars("HTTP/1.0 " + statusCodes[statusCodeIdx] + CRLF + CRLF); // end requestLine + end header
+        outToClient.writeBytes("HTTP/1.0 " + statusCodes[statusCodeIdx] + CRLF + CRLF); // end requestLine + end header
+        outToClient.writeBytes(statusCodes[statusCodeIdx] + CRLF);
     }
 }
 
